@@ -1,8 +1,16 @@
 from urllib.parse import urlparse
+import uuid
 from django.shortcuts import redirect
 from horilla.urls import urlpatterns
 from django.urls import Resolver404, path, resolve, reverse
 
+
+def is_valid_uuid(uuid_string):
+    try:
+        uuid.UUID(uuid_string, version=4)
+        return True
+    except ValueError:
+        return False
 
 def _split_path(self, path=None):
     """Returns a list of the path components between slashes"""
@@ -82,6 +90,8 @@ sidebar_urls = [
     "user-group-view",
     "company-view",
     "document-request-view",
+    "enable-biometric-attendance",
+    "view-biometric-devices",
 ]
 remove_urls = [
     "objective-detailed-view",
@@ -129,7 +139,7 @@ def breadcrumbs(request):
 
             new_dict = {"url": path, "name": item, "found": found}
 
-            if item.isdigit():
+            if item.isdigit() or is_valid_uuid(item):
                 # Handle the case when item is a digit (e.g., an ID)
                 current_url = resolve(request.path_info)
                 url_kwargs = current_url.kwargs

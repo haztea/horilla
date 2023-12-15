@@ -5,6 +5,7 @@ This page is used to map request or url path with function
 
 """
 from django.urls import path
+from attendance.models import BiometricDevices
 import attendance.views.clock_in_out
 
 import attendance.views.dashboard
@@ -96,6 +97,82 @@ urlpatterns = [
         "attendance-activity-info-export",
         views.attendance_activity_export,
         name="attendance-activity-info-export",
+    ),
+    path(
+        "view-biometric-devices/",
+        views.biometric_devices_view,
+        name="view-biometric-devices",
+    ),
+    path(
+        "biometric-device-attendance/<uuid:device_id>/",
+        attendance.views.clock_in_out.biometric_device_attendance,
+        name="biometric-device-attendance",
+    ),
+    path(
+        "biometric-device-live-capture",
+        attendance.views.clock_in_out.biometric_device_live,
+        name="biometric-device-live-capture",
+    ),
+    path(
+        "biometric-device-schedule/<uuid:device_id>/",
+        views.biometric_device_schedule,
+        name="biometric-device-schedule",
+    ),
+    path(
+        "biometric-device-test/<uuid:device_id>/",
+        views.biometric_device_test,
+        name="biometric-device-test",
+    ),
+    path(
+        "biometric-device-add",
+        views.biometric_device_add,
+        name="biometric-device-add",
+    ),
+    path(
+        "biometric-device-edit/<uuid:device_id>/",
+        views.biometric_device_edit,
+        name="biometric-device-edit",
+    ),
+    path(
+        "biometric-device-delete/<uuid:device_id>/",
+        views.biometric_device_delete,
+        name="biometric-device-delete",
+    ),
+    path(
+        "biometric-device-archive/<uuid:device_id>/",
+        views.biometric_device_archive,
+        name="biometric-device-archive",
+    ),
+    path(
+        "search-devices",
+        views.search_devices,
+        name="search-devices",
+    ),
+    path(
+        "biometric-device-employees/<uuid:device_id>/",
+        views.biometric_device_employees,
+        name="biometric-device-employees",
+        kwargs={"model": BiometricDevices},
+    ),
+    path(
+        "search-employee-in-device",
+        views.search_employee_device,
+        name="search-employee-in-device",
+    ),
+    path(
+        "add-biometric-user/<uuid:device_id>/",
+        views.add_biometric_user,
+        name="add-biometric-user",
+    ),
+    path(
+        "delete-biometric-user/<int:uid>/<uuid:device_id>/",
+        views.delete_biometric_user,
+        name="delete-biometric-user",
+    ),
+    path(
+        "biometric-users-bulk-delete",
+        views.bio_users_bulk_delete,
+        name="biometric-users-bulk-delete",
     ),
     path("view-my-attendance/", views.view_my_attendance, name="view-my-attendance"),
     path(
@@ -281,5 +358,7 @@ urlpatterns = [
         views.latecome_attendance_select_filter,
         name="latecome-attendance-select-filter",
     ),
-    path("pending-hours/",attendance.views.dashboard.pending_hours,name="pending-hours")
+    path(
+        "pending-hours/", attendance.views.dashboard.pending_hours, name="pending-hours"
+    ),
 ]

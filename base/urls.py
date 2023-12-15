@@ -78,7 +78,7 @@ urlpatterns = [
         name="permission-table",
     ),
     path("settings/company-create/", views.company_create, name="company-create"),
-    path('company-view', views.company_view,name='company-view'),
+    path("company-view", views.company_view, name="company-view"),
     path(
         "settings/company-update/<int:id>/",
         views.company_update,
@@ -92,7 +92,11 @@ urlpatterns = [
         kwargs={"model": Company, "redirect": "/company-view"},
     ),
     path("settings/department-view/", views.department_view, name="department-view"),
-    path("settings/department-creation/", views.department_create, name="department-creation"),
+    path(
+        "settings/department-creation/",
+        views.department_create,
+        name="department-creation",
+    ),
     path(
         "settings/department-update/<int:id>/",
         views.department_update,
@@ -494,6 +498,16 @@ urlpatterns = [
         "settings/attendance-settings-view/",
         views.validation_condition_view,
         name="attendance-settings-view",
+    ),
+    path(
+        "settings/enable-biometric-attendance/",
+        views.enable_biometric_attendance_view,
+        name="enable-biometric-attendance",
+    ),
+    path(
+        "settings/activate-biometric-attendance",
+        views.activate_biometric_attendance,
+        name="activate-biometric-attendance",
     ),
     path(
         "settings/attendance-settings-create/",

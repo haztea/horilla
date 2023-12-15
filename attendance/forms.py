@@ -39,8 +39,11 @@ from attendance.models import (
     AttendanceActivity,
     AttendanceLateComeEarlyOut,
     AttendanceValidationCondition,
+    BiometricDevices,
+    BiometricEmployees,
     strtime_seconds,
 )
+from base.forms import Form
 from django.utils.html import format_html
 
 
@@ -465,8 +468,6 @@ class AttendanceRequestForm(ModelForm):
                 ] = instance.attendance_clock_out_date.strftime("%Y-%m-%d")
             kwargs["initial"] = initial
         super().__init__(*args, **kwargs)
-        self.fields["attendance_clock_out_date"].required = False
-        self.fields["attendance_clock_out"].required = False
 
     class Meta:
         """
@@ -556,16 +557,8 @@ class NewRequestForm(AttendanceRequestForm):
             data["attendance_date"] = str(attendance_date)
             data["attendance_clock_in_date"] = self.data["attendance_clock_in_date"]
             data["attendance_clock_in"] = self.data["attendance_clock_in"]
-            data["attendance_clock_out"] = (
-                None
-                if data["attendance_clock_out"] == "None"
-                else data["attendance_clock_out"]
-            )
-            data["attendance_clock_out_date"] = (
-                None
-                if data["attendance_clock_out_date"] == "None"
-                else data["attendance_clock_out_date"]
-            )
+            data["attendance_clock_out"] = self.data["attendance_clock_out"]
+            data["attendance_clock_out_date"] = self.data["attendance_clock_out_date"]
             data["work_type_id"] = self.data["work_type_id"]
             data["shift_id"] = self.data["shift_id"]
             attendance = attendances.first()
@@ -698,3 +691,47 @@ class AttendanceOverTimeExportForm(forms.Form):
             "overtime",
         ],
     )
+
+
+class BiometricDeviceForm(ModelForm):
+    class Meta:
+        model = BiometricDevices
+        fields = "__all__"
+        exclude = [
+            "is_scheduler",
+            "scheduler_duration",
+            "is_active",
+            
+        ]
+        labels = {
+            "name": _("Device Name"),
+            "machine_ip": _("IP Address"),
+            "port": _("TCP COMM.Port"),
+        }
+
+
+class BiometricDeviceSchedulerForm(ModelForm):
+    class Meta:
+        model = BiometricDevices
+        fields = ["scheduler_duration"]
+        labels = {
+            "scheduler_duration": _("Enter the duration in the format HH:MM"),
+        }
+
+
+class EmployeeBiometricAddForm(Form):
+    employee_ids = forms.ModelMultipleChoiceField(
+        queryset=Employee.objects.all(),
+        widget=forms.SelectMultiple(),
+        label=_("Employees"),
+    )
+
+    def __init__(self, *args, **kwargs):
+        super(EmployeeBiometricAddForm, self).__init__(*args, **kwargs)
+
+        biometric_employee_ids = BiometricEmployees.objects.values_list(
+            "employee_id", flat=True
+        )
+        self.fields["employee_ids"].queryset = Employee.objects.exclude(
+            id__in=biometric_employee_ids
+        )

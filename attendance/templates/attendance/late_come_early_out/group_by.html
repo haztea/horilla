@@ -84,7 +84,7 @@
                     {% if perms.attendance.delete_attendancelatecomeearlyout %}
                     <form action="{% url 'late-come-early-out-delete' late_in_early_out.id  %}"
                       onclick="event.stopPropagation()" onsubmit="return confirm('{% trans "Are you sure want to delete this attendance?" %}')" 
-                      hx-target="#tab_contents" method='post'>
+                      hx-target="#tab_contents" method='post' class="w-100">
                       {% csrf_token %}
                       <button type='submit' class="oh-btn oh-btn--danger-outline oh-btn--light-bkg w-100" title="{% trans 'Remove' %}"><ion-icon name="trash-outline"></ion-icon></button>
                     </form>

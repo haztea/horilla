@@ -1,0 +1,37 @@
+{% load i18n %}
+<div class="oh-modal__dialog-header">
+  <h2 class="oh-modal__dialog-title" id="biometricDeviceEditLavel">
+    {% trans "Edit Biometric Devices" %}
+  </h2>
+  <button class="oh-modal__close" aria-label="Close">
+    <ion-icon name="close-outline"></ion-icon>
+  </button>
+  <div class="oh-modal__dialog-body p-0 pt-2" id="biometricDeviceEditModalBody">
+    <form
+      hx-post="{% url 'biometric-device-edit' device_id  %}"
+      hx-target="#BiometricDeviceFormTarget"
+      id="biometricDeviceEditForm"
+    >
+      {% csrf_token %} {{form.errors}} {{biometric_form.non_field_errors}}
+      <div class="col-sm-12 col-md-12 col-lg-12">
+        <div class="oh-input-group">
+          <label class="oh-label">{% trans "Name" %}</label>
+          {{biometric_form.name}} {{biometric_form.name.errors}}
+        </div>
+        <div class="oh-input-group">
+          <label class="oh-label">{% trans "Machine IP" %}</label>
+          {{biometric_form.machine_ip}} {{biometric_form.machine_ip.errors}}
+        </div>
+        <div class="oh-input-group">
+          <label class="oh-label">{% trans "Port No" %}</label>
+          {{biometric_form.port}} {{biometric_form.port.errors}}
+        </div>
+      </div>
+      <div class="oh-dropdown__filter-footer">
+        <button class="oh-btn oh-btn--secondary oh-btn--small w-100">
+          {% trans "Save" %}
+        </button>
+      </div>
+    </form>
+  </div>
+</div>

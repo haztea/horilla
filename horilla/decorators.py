@@ -1,14 +1,11 @@
-import logging
 from urllib.parse import urlencode
-from django.http import HttpResponse,HttpResponseRedirect, Http404
-from django.core.exceptions import ObjectDoesNotExist
+from django.http import HttpResponse,HttpResponseRedirect
 from django.shortcuts import redirect
 from django.urls import reverse
 from employee.models import Employee, EmployeeWorkInformation
+from attendance.models import BiometricAttendance
 from django.contrib import messages
-from django.shortcuts import render
-
-logger = logging.getLogger(__name__)
+from django.utils.translation import gettext_lazy as _
 
 
 decorator_with_arguments = lambda decorator: lambda *args, **kwargs: lambda func: decorator(func, *args, **kwargs)
@@ -22,6 +19,7 @@ def permission_required(function, perm):
             return HttpResponseRedirect(request. META. get('HTTP_REFERER', '/'))
 
     return _function
+
 
 
 decorator_with_arguments = lambda decorator: lambda *args, **kwargs: lambda func: decorator(func, *args, **kwargs)
@@ -73,12 +71,7 @@ def login_required(view_func):
             if params:
                 url += f'&{params}'
             return redirect(url)
-        try:
-            func = view_func(request, *args, **kwargs)
-        except Exception as e:
-            logger.exception(e)
-            return render(request,"404.html")
-        return func
+        return view_func(request, *args, **kwargs)
     return wrapped_view
 
 def hx_request_required(view_func):
@@ -89,6 +82,15 @@ def hx_request_required(view_func):
         return view_func(request, *args, **kwargs)
     return wrapped_view
 
+def install_required(function):
+    def _function(request, *args, **kwargs):
+        object = BiometricAttendance.objects.all().first()
+        if object.is_installed:
+            return function(request, *args, **kwargs)
+        else:
+            messages.info(request,_("Please activate the biometric attendance feature in the settings menu."))
+            return HttpResponseRedirect(request. META. get('HTTP_REFERER', '/'))
 
+    return _function
 
 

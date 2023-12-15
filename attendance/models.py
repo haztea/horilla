@@ -4,10 +4,10 @@ models.py
 This module is used to register models for recruitment app
 
 """
-from collections.abc import Iterable
 import json
 import contextlib
 from datetime import datetime, date, timedelta
+import uuid
 from django.db import models
 from django.db.models import Q
 from django.core.exceptions import ValidationError
@@ -56,8 +56,24 @@ def validate_time_format(value):
         if len(str(hour)) > 3 or minute not in range(60):
             raise ValidationError(_("Invalid time"))
     except ValueError as error:
-        raise ValidationError(_("Invalid format")) from error
+        raise ValidationError(_("Invalid format, it should be HH:MM format")) from error
 
+def validate_schedule_time_format(value):
+    """
+    this method is used to validate the format of duration like fields.
+    """
+    if len(value) > 6:
+        raise ValidationError(_("Invalid format, it should be HH:MM format"))
+    try:
+        hour, minute = value.split(":")
+        hour = int(hour)
+        minute = int(minute)
+        if len(str(hour)) > 3 or minute not in range(60):
+            raise ValidationError(_("Invalid time"))
+        if hour == 0 and minute == 0:
+            raise ValidationError(_("Both hour and minute cannot be zero"))
+    except ValueError as error:
+        raise ValidationError(_("Invalid format, it should be HH:MM format")) from error
 
 def attendance_date_validate(date):
     """
@@ -107,6 +123,87 @@ class AttendanceActivity(models.Model):
         """
 
         ordering = ["-attendance_date", "employee_id__employee_first_name", "clock_in"]
+        unique_together = (
+            "employee_id",
+            "attendance_date",
+            "clock_in_date",
+            "clock_in",
+        )
+
+    def save(self, *args, **kwargs):
+        # Find the previous attendance activity with the same attendance date and clock_out is None
+        super().save(*args, **kwargs)
+        previous_activity = (
+            AttendanceActivity.objects.filter(
+                employee_id=self.employee_id,
+                clock_out__isnull=True,
+                clock_out_date__isnull=True,
+                attendance_date=self.attendance_date,
+            )
+            .exclude(id=self.id)
+            .order_by("-attendance_date")
+            .last()
+        )
+        # Update the previous_activity with values from the current instance if it exists
+        if previous_activity:
+            AttendanceActivity.objects.filter(id=previous_activity.id).update(
+                clock_out_date=self.clock_in_date, clock_out=self.clock_in
+            )
+
+
+class BiometricAttendance(models.Model):
+    is_installed = models.BooleanField(default=False)
+    
+    def __str__(self):
+        return f"{self.is_installed}"
+
+
+class BiometricDevices(models.Model):
+    id = models.UUIDField(default=uuid.uuid4, primary_key=True, editable=False)
+    name = models.CharField(max_length=100)
+    machine_ip = models.CharField(max_length=15)
+    port = models.IntegerField()
+    is_live = models.BooleanField(default=False)
+    is_scheduler = models.BooleanField(default=False)
+    scheduler_duration = models.CharField(
+        null=True,
+        default="00:00",
+        max_length=10,
+        validators=[validate_schedule_time_format],
+    )
+    is_active = models.BooleanField(default=True)
+    last_fetch_date = models.DateField(null=True, blank=True)
+    last_fetch_time = models.TimeField(null=True, blank=True)
+    company_id = models.ForeignKey(
+        Company, null=True, editable=False, on_delete=models.PROTECT
+    )
+
+    objects = models.Manager()
+
+    def __str__(self):
+        return f"{self.name} - {self.machine_ip}"
+
+    class Meta:
+        verbose_name = _("Biometric Device")
+        verbose_name_plural = _("Biometric Devices")
+
+
+class BiometricEmployees(models.Model):
+    id = models.UUIDField(default=uuid.uuid4, primary_key=True, editable=False)
+    uid = models.IntegerField()
+    user_id = models.CharField(max_length=100)
+    employee_id = models.ForeignKey(Employee, on_delete=models.DO_NOTHING)
+    device_id = models.ForeignKey(
+        BiometricDevices, on_delete=models.DO_NOTHING, null=True, blank=True
+    )
+    objects = models.Manager()
+
+    def __str__(self):
+        return f"{self.employee_id} - {self.user_id}"
+
+    class Meta:
+        verbose_name = _("Employee in Biometric Device")
+        verbose_name_plural = _("Employees in Biometric Device")
 
 
 class Attendance(models.Model):
@@ -323,8 +420,8 @@ class Attendance(models.Model):
             "attendance_clock_in": str(self.attendance_clock_in),
             "attendance_clock_out": str(self.attendance_clock_out),
             "attendance_clock_out_date": str(self.attendance_clock_out_date),
-            "shift_id": self.shift_id.id if self.shift_id else "",
-            "work_type_id": self.work_type_id.id if self.work_type_id else "",
+            "shift_id": self.shift_id.id,
+            "work_type_id": self.work_type_id.id,
             "attendance_worked_hour": self.attendance_worked_hour,
             "minimum_hour": self.minimum_hour,
             # Add other fields you want to store
@@ -423,13 +520,13 @@ class Attendance(models.Model):
                     "attendance_clock_in_date": "Attendance check-in date never smaller than attendance date"
                 }
             )
-        if self.attendance_clock_out_date and self.attendance_clock_out_date < self.attendance_clock_in_date:
+        if self.attendance_clock_out_date < self.attendance_clock_in_date:
             raise ValidationError(
                 {
                     "attendance_clock_out_date": "Attendance check-out date never smaller than attendance check-in date"
                 }
             )
-        if self.attendance_clock_out_date and self.attendance_clock_out_date >= today:
+        if self.attendance_clock_out_date >= today:
             if out_time > now:
                 raise ValidationError(
                     {"attendance_clock_out": "Check out time not allow in the future"}
@@ -564,17 +661,11 @@ class AttendanceLateComeEarlyOut(models.Model):
         null=True,
         related_name="late_come_early_out",
         verbose_name=_("Employee"),
-        editable=False,
     )
     type = models.CharField(max_length=20, choices=choices, verbose_name=_("Type"))
     objects = HorillaCompanyManager(
         related_company_field="employee_id__employee_work_info__company_id"
     )
-
-    def save(self, *args, **kwargs) -> None:
-        super().save(*args, **kwargs)
-        self.employee_id = self.attendance_id.employee_id
-        super().save(*args, **kwargs)
 
     class Meta:
         """

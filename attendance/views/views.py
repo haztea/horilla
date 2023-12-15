@@ -7,7 +7,7 @@ responses in your application.
 Each view function corresponds to a specific URL route and performs the necessary
 actions to handle the request, process data, and generate a response.
 
-This module is part of the recruitment project and is intended to
+This module is part of the attendance project and is intended to
 provide the main entry points for interacting with the application's functionality.
 """
 
@@ -25,20 +25,29 @@ from django.contrib import messages
 from django.core.paginator import Paginator
 from django.db.models import ProtectedError
 from django.http import HttpResponseRedirect, HttpResponse, JsonResponse
+from apscheduler.schedulers.background import BackgroundScheduler
 from django.views.decorators.http import require_http_methods
+from zk import ZK, const
+from attendance.views.clock_in_out import (
+    biometric_device_attendance,
+    biometric_set_time,
+    str_time_seconds,
+)
+from attendance.views.handle_attendance_errors import handle_attendance_errors
+from attendance.views.process_attendance_data import process_attendance_data
+from base.methods import closest_numbers, export_data
+from base.methods import get_key_instances
+from employee.models import Employee, EmployeeWorkInformation
 from horilla.decorators import (
+    install_required,
     permission_required,
     login_required,
     hx_request_required,
     manager_can_enter,
 )
-from base.methods import closest_numbers, export_data
-from base.methods import get_key_instances
 from base.models import EmployeeShiftSchedule
 from base.methods import filtersubordinates, choosesubordinates
 from notifications.signals import notify
-from attendance.views.handle_attendance_errors import handle_attendance_errors
-from attendance.views.process_attendance_data import process_attendance_data
 from attendance.filters import (
     AttendanceFilters,
     AttendanceOverTimeFilter,
@@ -53,6 +62,9 @@ from attendance.forms import (
     AttendanceValidationConditionForm,
     AttendanceUpdateForm,
     AttendanceExportForm,
+    BiometricDeviceForm,
+    BiometricDeviceSchedulerForm,
+    EmployeeBiometricAddForm,
     LateComeEarlyOutExportForm,
 )
 
@@ -62,6 +74,8 @@ from attendance.models import (
     AttendanceOverTime,
     AttendanceLateComeEarlyOut,
     AttendanceValidationCondition,
+    BiometricDevices,
+    BiometricEmployees,
 )
 from attendance.filters import (
     AttendanceReGroup,
@@ -173,7 +187,7 @@ def paginator_qry(qryset, page_number):
     return qryset
 
 
-def attendance_excel(_request):
+def attendance_excel(request):
     """
     Generate an empty Excel template for attendance data with predefined columns.
 
@@ -519,6 +533,7 @@ def attendance_overtime_create(request):
 
 
 @login_required
+@manager_can_enter("attendance.view_attendanceovertime")
 def attendance_overtime_view(request):
     """
     This method is used to view attendance account or overtime account.
@@ -529,12 +544,9 @@ def attendance_overtime_view(request):
         template = "attendance/attendance_account/attendance_overtime_view.html"
     else:
         template = "attendance/attendance_account/overtime_empty.html"
-    self_account = filter_obj.qs.filter(employee_id__employee_user_id=request.user)
     accounts = filtersubordinates(
         request, filter_obj.qs, "attendance.view_attendanceovertime"
     )
-    accounts = accounts | self_account
-    accounts = accounts.distinct()
     form = AttendanceOverTimeForm()
     form = choosesubordinates(request, form, "attendance.add_attendanceovertime")
     export_obj = AttendanceOverTimeFilter()
@@ -646,21 +658,14 @@ def attendance_account_bulk_delete(request):
 
 
 @login_required
+@permission_required("attendance.view_attendanceactivity")
 def attendance_activity_view(request):
     """
     This method will render a template to view all attendance activities
     """
+    attendance_activities = AttendanceActivity.objects.all()
     previous_data = request.GET.urlencode()
-    filter_obj = AttendanceActivityFilter(request.GET)
-    attendance_activities = filter_obj.qs
-    self_attendance_activities = attendance_activities.filter(
-        employee_id__employee_user_id=request.user
-    )
-    attendance_activities = filtersubordinates(
-        request, filter_obj.qs, "attendance.view_attendanceovertime"
-    )
-    attendance_activities = attendance_activities | self_attendance_activities
-    attendance_activities = attendance_activities.distinct()
+    filter_obj = AttendanceActivityFilter()
     export_form = AttendanceActivityExportForm()
     if attendance_activities.exists():
         template = "attendance/attendance_activity/attendance_activity_view.html"
@@ -734,6 +739,485 @@ def attendance_activity_export(request):
         form_class=AttendanceActivityExportForm,
         file_name="Attendance_activity",
     )
+
+
+@login_required
+@install_required
+@permission_required("attendance.view_biometricdevices")
+def biometric_devices_view(request):
+    biometric_form = BiometricDeviceForm()
+    biometric_devices = BiometricDevices.objects.filter(is_active=True)
+    biometric_devices = paginator_qry(biometric_devices, request.GET.get("page"))
+    template = "attendance/biometric/view_biometric_devices.html"
+    context = {
+        "biometric_form": biometric_form,
+        "devices": biometric_devices,
+    }
+    return render(request, template, context)
+
+
+@login_required
+@install_required
+@permission_required("attendance.add_biometricdevices")
+def biometric_device_schedule(request, device_id):
+    scheduler_form = BiometricDeviceSchedulerForm()
+    context = {
+        "scheduler_form": scheduler_form,
+        "device_id": device_id,
+    }
+    if request.method == "POST":
+        scheduler_form = BiometricDeviceSchedulerForm(request.POST)
+        if scheduler_form.is_valid():
+            device = BiometricDevices.objects.get(id=device_id)
+            port_no = device.port
+            machine_ip = device.machine_ip
+            conn = None
+            zk = ZK(
+                machine_ip,
+                port=port_no,
+                timeout=5,
+                password=0,
+                force_udp=False,
+                ommit_ping=False,
+            )
+            try:
+                conn = zk.connect()
+                conn.test_voice(index=0)
+                duration = request.POST.get("scheduler_duration")
+                device = BiometricDevices.objects.get(id=device_id)
+                device.scheduler_duration = duration
+                device.is_scheduler = True
+                device.is_live = False
+                device.save()
+                scheduler = BackgroundScheduler()
+                scheduler.add_job(
+                    lambda: biometric_device_attendance(device.id),
+                    "interval",
+                    seconds=str_time_seconds(device.scheduler_duration),
+                )
+                scheduler.start()
+                return HttpResponse("<script>window.location.reload()</script>")
+            except Exception as e:
+                print(f"An error comes in biometric_device_schedule {e}")
+                script = """
+                <script>
+                    Swal.fire({
+                      title : "Schedule Attendance unsuccessful",
+                      text: "Please double-check the accuracy of the provided IP Address and Port Number for correctness",
+                      icon: "warning",
+                      showConfirmButton: false,
+                      timer: 3500, 
+                      timerProgressBar: true,
+                      didClose: () => {
+                        location.reload(); 
+                        },
+                    });
+                </script>
+                """
+                return HttpResponse(script)
+        context["scheduler_form"] = scheduler_form
+        response = render(
+            request, "attendance/biometric/scheduler_device_form.html", context
+        )
+        return HttpResponse(
+            response.content.decode("utf-8")
+            + "<script>$('#BiometricDeviceTestModal').removeClass('oh-modal--show');$('#BiometricDeviceModal').toggleClass('oh-modal--show');</script>"
+        )
+
+    # BiometricDeviceTestLavel
+
+    return render(request, "attendance/biometric/scheduler_device_form.html", context)
+
+
+@login_required
+@install_required
+@permission_required("attendance.add_biometricdevices")
+def biometric_device_test(request, device_id):
+    device = BiometricDevices.objects.get(id=device_id)
+    port_no = device.port
+    machine_ip = device.machine_ip
+    conn = None
+    # create ZK instance
+    zk = ZK(
+        machine_ip,
+        port=port_no,
+        timeout=5,
+        password=0,
+        force_udp=False,
+        ommit_ping=False,
+    )
+    try:
+        conn = zk.connect()
+        conn.test_voice(index=0)
+        biometric_set_time(conn)
+        script = """<script>
+                Swal.fire({
+                  text: "Connection test successful.",
+                  icon: "success",
+                  showConfirmButton: false,
+                  timer: 1500,
+                  timerProgressBar: true,
+                  didClose: () => {
+                    location.reload();
+                    },
+                });
+                </script>
+            """
+    except Exception as e:
+        print(f"An error comes in biometric_device_test {e}")
+        script = """
+       <script>
+            Swal.fire({
+              title : "Connection unsuccessful",
+              text: "Please double-check the accuracy of the provided IP Address and Port Number for correctness",
+              icon: "warning",
+              showConfirmButton: false,
+              timer: 3500, 
+              timerProgressBar: true,
+              didClose: () => {
+                location.reload(); 
+                },
+            });
+        </script>
+        """
+    finally:
+        if conn:
+            conn.disconnect()
+    return HttpResponse(script)
+
+
+@login_required
+@install_required
+@permission_required("attendance.add_biometricdevices")
+def biometric_device_add(request):
+    if request.method == "POST":
+        form = BiometricDeviceForm(request.POST)
+        if form.is_valid():
+            form.save()
+            messages.success(request, _("Biometric device added successfully."))
+            return HttpResponse("<script>window.location.reload()</script>")
+
+
+@login_required
+@install_required
+@permission_required("attendance.change_biometricdevices")
+def biometric_device_edit(request, device_id):
+    device = BiometricDevices.objects.get(id=device_id)
+    biometric_form = BiometricDeviceForm(instance=device)
+    if request.method == "POST":
+        biometric_form = BiometricDeviceForm(request.POST, instance=device)
+        if biometric_form.is_valid():
+            biometric_form.save()
+            messages.success(request, _("Biometric device updated successfully."))
+            return HttpResponse("<script>window.location.reload()</script>")
+    context = {
+        "biometric_form": biometric_form,
+        "device_id": device_id,
+    }
+    return render(request, "attendance/biometric/edit_biometric_device.html", context)
+
+
+@login_required
+@install_required
+@permission_required(perm="attendance.delete_biometricdevices")
+def biometric_device_archive(request, device_id):
+    """
+    This method is used to archive or un-archive devices
+    """
+    device_obj = BiometricDevices.objects.get(id=device_id)
+    device_obj.is_active = not device_obj.is_active
+    device_obj.connection = False
+    device_obj.save()
+    message = _("archived") if not device_obj.is_active else _("un-archived")
+    messages.success(request, _("Device is %(message)s") % {"message": message})
+    return redirect(biometric_devices_view)
+
+
+@login_required
+@install_required
+@permission_required(perm="attendance.delete_biometricdevices")
+def biometric_device_delete(request, device_id):
+    device = BiometricDevices.objects.get(id=device_id)
+    device.delete()
+    messages.success(request, _("Biometric device deleted successfully."))
+    return redirect(biometric_devices_view)
+
+
+@login_required
+@install_required
+@permission_required("attendance.view_biometricdevices")
+def search_devices(request):
+    """
+    This method is used to search biometric device model and return matching objects
+    """
+    previous_data = request.GET.urlencode()
+    search = request.GET.get("search")
+    if search is None:
+        search = ""
+    devices = BiometricDevices.objects.filter(name__icontains=search)
+    data_dict = []
+    if not request.GET.get("dashboard"):
+        data_dict = parse_qs(previous_data)
+        get_key_instances(BiometricDevices, data_dict)
+
+    template = "attendance/biometric/card_biometric_devices.html"
+    if request.GET.get("view") == "list":
+        template = "attendance/biometric/list_biometric_devices.html"
+
+    devices = paginator_qry(devices, request.GET.get("page"))
+    return render(
+        request,
+        template,
+        {
+            "devices": devices,
+            "pd": previous_data,
+            "filter_dict": data_dict,
+        },
+    )
+
+
+def employees_fetch(device):
+    zk = ZK(
+        device.machine_ip,
+        port=device.port,
+        timeout=1,
+        password=0,
+        force_udp=False,
+        ommit_ping=False,
+    )
+    conn = zk.connect()
+    conn.enable_device()
+    users = conn.get_users()
+    fingers = conn.get_templates()
+    employees = []
+    for user in users:
+        user_id = user.user_id
+        uid = user.uid
+        bio_id = BiometricEmployees.objects.filter(user_id=user_id).first()
+        if bio_id:
+            employee = bio_id.employee_id
+            employee_work_info = EmployeeWorkInformation.objects.filter(
+                employee_id=employee
+            ).first()
+            if employee_work_info:
+                work_email = (
+                    employee_work_info.email if employee_work_info.email else None
+                )
+                phone = employee_work_info.mobile if employee_work_info.mobile else None
+                job_position = (
+                    employee_work_info.job_position_id
+                    if employee_work_info.job_position_id
+                    else None
+                )
+                user.__dict__["work_email"] = work_email
+                user.__dict__["phone"] = phone
+                user.__dict__["job_position"] = job_position
+            else:
+                user.__dict__["work_email"] = None
+                user.__dict__["phone"] = None
+                user.__dict__["job_position"] = None
+            user.__dict__["employee"] = employee
+            user.__dict__["badge_id"] = employee.badge_id
+            finger_print = []
+            for finger in fingers:
+                if finger.uid == uid:
+                    finger_print.append(finger.fid)
+            if not finger_print:
+                finger_print = []
+            user.__dict__["finger"] = finger_print
+            employees.append(user)
+    return employees
+
+
+@login_required
+@install_required
+@permission_required("attendance.view_biometricdevices")
+def biometric_device_employees(request, device_id, **kwargs):
+    previous_data = request.GET.urlencode()
+    employee_add_form = EmployeeBiometricAddForm()
+    device = BiometricDevices.objects.get(id=device_id)
+    try:
+        employees = employees_fetch(device)
+        employees = paginator_qry(employees, request.GET.get("page"))
+        context = {
+            "employees": employees,
+            "device_id": device_id,
+            "form": employee_add_form,
+            "pd": previous_data,
+        }
+        return render(
+            request, "attendance/biometric/view_employees_biometric.html", context
+        )
+    except Exception as e:
+        print(f"An error occurred: {e}")
+        messages.info(
+            request,
+            _(
+                "Failed to establish a connection. Please verify the accuracy of the IP Address and Port No. of the device."
+            ),
+        )
+        return redirect(biometric_devices_view)
+
+
+@login_required
+@install_required
+@permission_required("attendance.view_biometricdevices")
+def search_employee_device(request):
+    previous_data = request.GET.urlencode()
+    device_id = request.GET.get("device")
+    device = BiometricDevices.objects.get(id=device_id)
+    search = request.GET.get("search")
+    employees = employees_fetch(device)
+    if search:
+        search_employees = BiometricEmployees.objects.filter(
+            employee_id__employee_first_name__icontains=search
+        )
+        search_uids = search_employees.values_list("uid", flat=True)
+        employees = [employee for employee in employees if employee.uid in search_uids]
+    employees = paginator_qry(employees, request.GET.get("page"))
+    template = "attendance/biometric/list_employees_biometric.html"
+    context = {
+        "employees": employees,
+        "device_id": device_id,
+        "pd": previous_data,
+    }
+    return render(request, template, context)
+
+
+@login_required
+@install_required
+@permission_required("attendance.delete_biometricdevices")
+def delete_biometric_user(request, uid, device_id):
+    device = BiometricDevices.objects.get(id=device_id)
+    zk = ZK(
+        device.machine_ip,
+        port=device.port,
+        timeout=5,
+        password=0,
+        force_udp=False,
+        ommit_ping=False,
+    )
+    conn = zk.connect()
+    conn.delete_user(uid=uid)
+    employee_bio = BiometricEmployees.objects.filter(uid=uid).first()
+    employee_bio.delete()
+    messages.success(
+        request,
+        _(
+            "{} successfully removed from the biometric device.".format(
+                employee_bio.employee_id
+            ),
+        ),
+    )
+    redirect_url = f"/attendance/biometric-device-employees/{device_id}/"
+    return redirect(redirect_url)
+
+
+@login_required
+@install_required
+@permission_required("attendance.delete_biometricdevices")
+def bio_users_bulk_delete(request):
+    conn = None
+    json_ids = request.POST["ids"]
+    device_id = request.POST["deviceId"]
+    ids = json.loads(json_ids)
+    device = BiometricDevices.objects.get(id=device_id)
+    try:
+        zk = ZK(
+            device.machine_ip,
+            port=device.port,
+            timeout=5,
+            password=0,
+            force_udp=False,
+            ommit_ping=False,
+        )
+        conn = zk.connect()
+        for id in ids:
+            user_id = int(id)
+            conn.delete_user(user_id=user_id)
+            employee_bio = BiometricEmployees.objects.filter(user_id=user_id).first()
+            employee_bio.delete()
+            conn.refresh_data()
+            messages.success(
+                request,
+                _(
+                    "{} successfully removed from the biometric device.".format(
+                        employee_bio.employee_id
+                    ),
+                ),
+            )
+    except Exception as e:
+        print(f"An error occurred: {e}")
+    return JsonResponse({"messages": "Success"})
+
+
+def add_biometric_user(request, device_id):
+    if request.method == "POST":
+        device = BiometricDevices.objects.get(id=device_id)
+        try:
+            zk = ZK(
+                device.machine_ip,
+                port=device.port,
+                timeout=5,
+                password=0,
+                force_udp=False,
+                ommit_ping=False,
+            )
+            conn = zk.connect()
+            conn.enable_device()
+            existing_uids = [user.uid for user in conn.get_users()]
+            existing_user_ids = [user.user_id for user in conn.get_users()]
+            existing_user_ids = [user.user_id for user in conn.get_users()]
+            uid = 1
+            user_id = 1000
+            employee_ids = request.POST.getlist("employee_ids")
+            for id in employee_ids:
+                employee = Employee.objects.get(id=id)
+                while uid in existing_uids or user_id in existing_user_ids:
+                    user_id = int(user_id)
+                    uid += 1
+                    user_id += 1
+                existing_uids.append(uid)
+                existing_user_ids.append(user_id)
+                existing_biometric_employee = BiometricEmployees.objects.filter(
+                    employee_id=employee
+                ).first()
+                if existing_biometric_employee is None:
+                    user_id = str(user_id)
+                    conn.set_user(
+                        uid=uid,
+                        name=employee.employee_first_name
+                        + " "
+                        + employee.employee_last_name,
+                        password="",
+                        group_id="",
+                        user_id=user_id,
+                        card=0,
+                    )
+                    employee_bio = BiometricEmployees.objects.create(
+                        uid=uid, user_id=user_id, employee_id=employee
+                    )
+                    messages.success(
+                        request,
+                        _(
+                            "{} added to biometric device successfully".format(
+                                employee
+                            ),
+                        ),
+                    )
+                else:
+                    messages.info(
+                        request,
+                        _(
+                            "{} already added to biometric device".format(employee),
+                        ),
+                    )
+
+        except Exception as e:
+            conn.disable_device()
+            print(f"An error occurred: {str(e)}")
+
+    return HttpResponse("<script>window.location.reload()</script>")
 
 
 def employee_exists(request):
@@ -829,24 +1313,20 @@ def on_time_view(request):
 
 
 @login_required
+@manager_can_enter("attendance.view_attendancelatecomeearlyout")
 def late_come_early_out_view(request):
     """
     This method render template to view all late come early out entries
     """
-    filter_obj = LateComeEarlyOutFilter(request.GET)
-    if filter_obj.qs.exists():
+    reports = AttendanceLateComeEarlyOut.objects.all()
+    if reports.exists():
         template = "attendance/late_come_early_out/reports.html"
     else:
         template = "attendance/late_come_early_out/reports_empty.html"
-    self_reports = filter_obj.qs.filter(
-        employee_id__employee_user_id=request.user
-    )
     reports = filtersubordinates(
-        request, filter_obj.qs, "attendance.view_attendancelatecomeearlyout"
+        request, reports, "attendance.view_attendancelatecomeearlyout"
     )
-
-    reports = reports | self_reports
-    reports = reports.distinct()
+    filter_obj = LateComeEarlyOutFilter(request.GET, reports)
     previous_data = request.GET.urlencode()
     export_form = LateComeEarlyOutExportForm()
     data_dict = parse_qs(previous_data)
@@ -855,7 +1335,7 @@ def late_come_early_out_view(request):
         request,
         template,
         {
-            "data": paginator_qry(reports, request.GET.get("page")),
+            "data": paginator_qry(filter_obj.qs, request.GET.get("page")),
             "f": filter_obj,
             "gp_fields": LateComeEarlyOutReGroup.fields,
             "export": LateComeEarlyOutFilter(
@@ -1229,22 +1709,14 @@ def user_request_one_view(request, id):
 @login_required
 def hour_attendance_select(request):
     page_number = request.GET.get("page")
-    context = {}
 
     if page_number == "all":
-        if request.user.has_perm("attendance.view_attendanceovertime"):
-            employees = AttendanceOverTime.objects.all()
-        else:
-            employees = AttendanceOverTime.objects.filter(
-                employee_id__employee_user_id=request.user
-            ) | AttendanceOverTime.objects.filter(
-                employee_id__employee_work_info__reporting_manager_id__employee_user_id=request.user
-            )
+        employees = AttendanceOverTime.objects.all()
 
-        employee_ids = [str(emp.id) for emp in employees]
-        total_count = employees.count()
+    employee_ids = [str(emp.id) for emp in employees]
+    total_count = employees.count()
 
-        context = {"employee_ids": employee_ids, "total_count": total_count}
+    context = {"employee_ids": employee_ids, "total_count": total_count}
 
     return JsonResponse(context, safe=False)
 

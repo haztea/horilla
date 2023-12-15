@@ -3,7 +3,6 @@ views.py
 
 This module is used to map url pattens with django views or methods
 """
-from django.apps import apps
 from datetime import timedelta, datetime
 from urllib.parse import parse_qs, urlencode
 import uuid
@@ -19,7 +18,7 @@ from django.contrib import messages
 from django.contrib.auth import authenticate, login, logout
 from django.contrib.auth.models import Group, User, Permission
 from attendance.forms import AttendanceValidationConditionForm
-from attendance.models import AttendanceValidationCondition
+from attendance.models import AttendanceValidationCondition, BiometricAttendance
 from notifications.signals import notify
 from horilla.decorators import (
     delete_permission,
@@ -377,7 +376,7 @@ def common_settings(request):
 
 
 @login_required
-@permission_required("auth.add_group")
+@permission_required("add_group")
 def user_group_table(request):
     """
     Group assign htmx view
@@ -393,7 +392,6 @@ def user_group_table(request):
         "asset",
         "attendance",
         "payroll",
-        "auth",
     ]
     form = UserGroupForm()
     for app_name in apps:
@@ -424,7 +422,7 @@ def user_group_table(request):
 
 @login_required
 @require_http_methods(["POST"])
-@permission_required("auth.add_permission")
+@permission_required("base.add_company")
 def update_group_permission(
     request,
 ):
@@ -472,7 +470,6 @@ def user_group(request):
         "asset",
         "attendance",
         "payroll",
-        "auth",
     ]
     form = UserGroupForm()
     for app_name in apps:
@@ -603,7 +600,7 @@ def user_group_update(request, id, **kwargs):
         if form.is_valid():
             form.save()
             messages.success(request, _("User group updated."))
-            return redirect(user_group_create)
+            return redirect(user_group_view)
 
     groups = Group.objects.all()
     return render(request, "base/auth/group.html", {"form": form, "groups": groups})
@@ -1926,6 +1923,7 @@ def rotating_shift_assign_delete(request, id):
     return HttpResponseRedirect(request.META.get("HTTP_REFERER", "/"))
 
 
+from django.apps import apps
 
 
 def get_models_in_app(app_name):
@@ -1941,7 +1939,7 @@ def get_models_in_app(app_name):
 
 
 @login_required
-@manager_can_enter("auth.view_permission")
+@permission_required("add_permission")
 def employee_permission_assign(request):
     """
     This method is used to assign permissions to employee user
@@ -1969,7 +1967,6 @@ def employee_permission_assign(request):
         "asset",
         "attendance",
         "payroll",
-        "auth",
     ]
     for app_name in apps:
         app_models = []
@@ -2020,7 +2017,7 @@ def employee_permission_search(request, codename=None, uid=None):
 
 @login_required
 @require_http_methods(["POST"])
-@permission_required("auth.add_permission")
+@permission_required("base.add_company")
 def update_permission(
     request,
 ):
@@ -2049,6 +2046,8 @@ def permission_table(request):
     This method is used to render the permission table
     """
     permissions = []
+    print("iiioanasdfffffffffffffff")
+
     apps = [
         "base",
         "recruitment",
@@ -2651,6 +2650,7 @@ def shift_request_view(request):
         },
     )
 
+
 @login_required
 def shift_request_export(request):
     return export_data(
@@ -3119,6 +3119,37 @@ def validation_condition_view(request):
         "attendance/break_point/condition.html",
         {"condition": condition},
     )
+
+
+def enable_biometric_attendance_view(request):
+    biometric = BiometricAttendance.objects.first()
+    return render(
+        request,
+        "attendance/biometric/install_biometric_attendance.html",
+        {"biometric": biometric},
+    )
+
+
+def activate_biometric_attendance(request):
+    if request.method == "GET":
+        is_installed = request.GET.get("is_installed")
+        instance = BiometricAttendance.objects.first()
+        if is_installed == "true":
+            instance.is_installed = True
+            messages.success(
+                request,
+                _("The biometric attendance feature has been activated successfully."),
+            )
+        else:
+            instance.is_installed = False
+            messages.info(
+                request,
+                _(
+                    "The biometric attendance feature has been deactivated successfully."
+                ),
+            )
+        instance.save()
+    return JsonResponse({"message": "Success"})
 
 
 @login_required
